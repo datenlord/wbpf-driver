@@ -5,8 +5,9 @@
 #include <linux/of.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
-#include "wbpf_device.h"
 #include <asm/io.h>
+#include <linux/device.h>
+#include "wbpf_device.h"
 
 const unsigned long HW_FREQ = 50000000;
 
@@ -38,6 +39,24 @@ static int load_wbpf_device_region(struct wbpf_device_region *region, struct dev
   region->size = resource_size(res);
   return 0;
 }
+
+// https://stackoverflow.com/a/37255743
+static ssize_t wdev_num_pe_show(struct device *dev,
+                                struct device_attribute *attr, char *buf)
+{
+  struct wbpf_device *wdev = dev_get_drvdata(dev);
+
+  // https://www.kernel.org/doc/Documentation/filesystems/sysfs.txt
+  // "sysfs allocates a buffer of size (PAGE_SIZE) and passes it to the method."
+  return sprintf(buf, "%d\n", wdev->num_pe);
+}
+
+static DEVICE_ATTR(num_pe, S_IRUGO, wdev_num_pe_show, NULL);
+
+static struct attribute *wdev_attrs[] = {
+    &dev_attr_num_pe.attr,
+    NULL};
+ATTRIBUTE_GROUPS(wdev);
 
 int wbpf_pd_probe(struct platform_device *pdev)
 {
@@ -115,7 +134,7 @@ int wbpf_pd_probe(struct platform_device *pdev)
   if (ret)
     return ret;
 
-  pr_info("wBPF device '%s' registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
+  pr_info("wbpf: device '%s' registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
           pdev->name,
           irq,
           memres_mmio->start, memres_mmio->end,
@@ -126,7 +145,7 @@ int wbpf_pd_probe(struct platform_device *pdev)
 
 int wbpf_pd_remove(struct platform_device *dev)
 {
-  pr_info("wBPF PD remove\n");
+  pr_info("wbpf: platform device removed\n");
   return 0;
 }
 
@@ -136,6 +155,9 @@ static struct platform_driver wbpf_platform_driver = {
     .driver = {
         .name = "wbpf_driver",
         .owner = THIS_MODULE,
+
+        // https://lwn.net/Articles/794974/
+        .dev_groups = wdev_groups,
         .of_match_table = of_match_ptr(wbpf_match_table),
     },
 };
@@ -148,14 +170,14 @@ int init_module(void)
   if (err)
     return err;
 
-  pr_info("wBPF driver init\n");
+  pr_info("wbpf: driver loaded\n");
   return 0;
 }
 
 void cleanup_module(void)
 {
   platform_driver_unregister(&wbpf_platform_driver);
-  pr_info("wBPF driver cleanup\n");
+  pr_info("wbpf: driver cleanup\n");
 }
 
 MODULE_LICENSE("GPL");
