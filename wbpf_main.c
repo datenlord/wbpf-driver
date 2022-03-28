@@ -10,7 +10,9 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/cdev.h>
+#include <linux/slab.h>
 #include "wbpf_device.h"
+#include "wbpf_uapi.h"
 
 #define DEVICE_NAME "wbpf"
 
@@ -33,12 +35,14 @@ MODULE_DEVICE_TABLE(of, wbpf_match_table);
 static int fop_open(struct inode *inode, struct file *filp);
 static int fop_release(struct inode *inode, struct file *filp);
 static int fop_mmap(struct file *filp, struct vm_area_struct *vma);
+static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 
 static const struct file_operations wbpf_fops = {
     .owner = THIS_MODULE,
     .open = fop_open,
     .release = fop_release,
     .mmap = fop_mmap,
+    .unlocked_ioctl = fop_ioctl,
 };
 
 static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
@@ -235,6 +239,68 @@ static int fop_mmap(struct file *filp, struct vm_area_struct *vma)
     return ret;
 
   return 0;
+}
+
+static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+  int i;
+  struct wbpf_device *wdev = filp->private_data;
+  union wbpf_uapi_arg user_arg;
+  uint8_t *buffer;
+  uint32_t *code_pointer;
+  void __iomem *io_addr;
+
+  switch (cmd)
+  {
+  case WBPF_IOCTL_LOAD_CODE:
+    if (copy_from_user(&user_arg.load_code, (void __user *)arg, sizeof(user_arg.load_code)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.load_code.pe_index >= wdev->num_pe)
+    {
+      return -EINVAL;
+    }
+    if (
+        user_arg.load_code.offset + user_arg.load_code.code_len < user_arg.load_code.offset ||
+        user_arg.load_code.offset + user_arg.load_code.code_len > MAX_LOAD_CODE_SIZE ||
+        user_arg.load_code.code_len == 0 ||
+        (user_arg.load_code.code_len & 0b111) != 0 ||
+        (user_arg.load_code.offset & 0b111) != 0)
+    {
+      return -EINVAL;
+    }
+    buffer = kmalloc(user_arg.load_code.code_len, GFP_KERNEL);
+    if (!buffer)
+    {
+      return -ENOMEM;
+    }
+    if (copy_from_user(buffer, (void __user *)user_arg.load_code.code, user_arg.load_code.code_len))
+    {
+      kfree(buffer);
+      return -EFAULT;
+    }
+    code_pointer = (uint32_t *)buffer;
+    i = user_arg.load_code.code_len >> 3;
+    io_addr = wdev->mmio.virt + 0x1000UL * ((unsigned long)(user_arg.load_code.pe_index) + 1);
+
+    writel(user_arg.load_code.offset, io_addr + 0x0); // refill counter
+    while (i--)
+    {
+      writel(*(code_pointer++), io_addr + 0x08);
+      writel(*(code_pointer++), io_addr + 0x10);
+    }
+
+    pr_info("wbpf: code of %u bytes loaded to processing element %u offset %u\n",
+            user_arg.load_code.code_len,
+            user_arg.load_code.pe_index,
+            user_arg.load_code.offset);
+
+    kfree(buffer);
+    return 0;
+  default:
+    return -EINVAL;
+  }
 }
 
 int init_module(void)
