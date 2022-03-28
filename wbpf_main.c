@@ -48,7 +48,23 @@ static const struct file_operations wbpf_fops = {
 static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
 {
   struct platform_device *pdev = pdev_v;
+  struct wbpf_device *wdev = platform_get_drvdata(pdev);
+  int i;
+  uint32_t __iomem *code_reg;
+  uint32_t code;
+
   printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
+  for (i = 0; i < wdev->num_pe; i++)
+  {
+    code_reg = mmio_base_for_core(wdev, i) + 0x20;
+    code = readl(code_reg);
+    if (code)
+    {
+      printk(KERN_INFO "wbpf: code %d from processing element %d\n", code, i);
+      writel(0x1, code_reg);
+    }
+  }
+
   return IRQ_HANDLED;
 }
 
@@ -282,7 +298,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     }
     code_pointer = (uint32_t *)buffer;
     i = user_arg.load_code.code_len >> 3;
-    io_addr = wdev->mmio.virt + 0x1000UL * ((unsigned long)(user_arg.load_code.pe_index) + 1);
+    io_addr = mmio_base_for_core(wdev, user_arg.load_code.pe_index);
 
     writel(user_arg.load_code.offset, io_addr + 0x0); // refill counter
     while (i--)
@@ -297,6 +313,30 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
             user_arg.load_code.offset);
 
     kfree(buffer);
+    return 0;
+  case WBPF_IOCTL_STOP:
+    if (copy_from_user(&user_arg.stop, (void __user *)arg, sizeof(user_arg.stop)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.stop.pe_index >= wdev->num_pe)
+    {
+      return -EINVAL;
+    }
+    io_addr = mmio_base_for_core(wdev, user_arg.stop.pe_index);
+    writel(0x1, io_addr + 0x04);
+    return 0;
+  case WBPF_IOCTL_START:
+    if (copy_from_user(&user_arg.start, (void __user *)arg, sizeof(user_arg.start)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.start.pe_index >= wdev->num_pe)
+    {
+      return -EINVAL;
+    }
+    io_addr = mmio_base_for_core(wdev, user_arg.start.pe_index);
+    writel(user_arg.start.pc, io_addr + 0x18);
     return 0;
   default:
     return -EINVAL;
