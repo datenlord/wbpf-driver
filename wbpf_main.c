@@ -14,7 +14,8 @@
 
 #define DEVICE_NAME "wbpf"
 
-static int major;
+// TODO: Multiple devices
+static dev_t dev_singleton;
 static struct class *dev_cls;
 
 const unsigned long HW_FREQ = 100000000;
@@ -155,15 +156,16 @@ int wbpf_pd_probe(struct platform_device *pdev)
   if (ret)
     return ret;
 
-  // TODO: Allocate minor number
   cdev_init(&wdev->cdev, &wbpf_fops);
   wdev->cdev.owner = THIS_MODULE;
-  ret = cdev_add(&wdev->cdev, MKDEV(major, 0), 1);
+
+  // TODO: Review ownership issue
+  ret = cdev_add(&wdev->cdev, dev_singleton, 1);
   if (ret)
     return ret;
 
-  wdev->chrdev = device_create(dev_cls, NULL, MKDEV(major, 0),
-                               NULL, DEVICE_NAME);
+  wdev->chrdev = device_create(dev_cls, NULL, dev_singleton,
+                               NULL, pdev->name);
   if (IS_ERR(wdev->chrdev))
   {
     pr_err("wbpf: failed to create chrdev - error %ld\n", PTR_ERR(wdev->chrdev));
@@ -184,7 +186,7 @@ int wbpf_pd_remove(struct platform_device *pdev)
 {
   struct wbpf_device *wdev = dev_get_drvdata(&pdev->dev);
 
-  device_destroy(dev_cls, MKDEV(major, 0));
+  device_destroy(dev_cls, dev_singleton);
   cdev_del(&wdev->cdev);
   pr_info("wbpf: platform device removed\n");
   return 0;
@@ -238,12 +240,10 @@ static int fop_mmap(struct file *filp, struct vm_area_struct *vma)
 int init_module(void)
 {
   int ret;
-  dev_t dev;
 
-  ret = alloc_chrdev_region(&dev, 0, 1, "wbpf");
+  ret = alloc_chrdev_region(&dev_singleton, 0, 1, "wbpf");
   if (ret)
     goto fail_alloc_chrdev;
-  major = MAJOR(dev);
 
   dev_cls = class_create(THIS_MODULE, DEVICE_NAME);
   if (IS_ERR(dev_cls))
@@ -263,7 +263,7 @@ fail_platform_driver_register:
   class_destroy(dev_cls);
 
 fail_class_create:
-  unregister_chrdev_region(MKDEV(major, 0), 1);
+  unregister_chrdev_region(dev_singleton, 1);
 
 fail_alloc_chrdev:
   return ret;
@@ -273,7 +273,7 @@ void cleanup_module(void)
 {
   platform_driver_unregister(&wbpf_platform_driver);
   class_destroy(dev_cls);
-  unregister_chrdev_region(MKDEV(major, 0), 1);
+  unregister_chrdev_region(dev_singleton, 1);
   pr_info("wbpf: driver cleanup\n");
 }
 
