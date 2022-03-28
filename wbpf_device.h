@@ -16,6 +16,8 @@ struct wbpf_device
   struct clk *clk;
 
   int num_pe;
+  uint32_t hw_revision_major;
+  uint32_t hw_revision_minor;
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);

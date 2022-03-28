@@ -9,7 +9,7 @@
 #include <linux/device.h>
 #include "wbpf_device.h"
 
-const unsigned long HW_FREQ = 50000000;
+const unsigned long HW_FREQ = 100000000;
 
 // TODO: DT
 unsigned long LVL_SHFTR_EN = 0xF8000900;
