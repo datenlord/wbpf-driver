@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "platform_device.h": "c",
+    "kernel.h": "c"
+  }
+}

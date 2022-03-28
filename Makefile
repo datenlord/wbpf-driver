@@ -1,4 +1,5 @@
-obj-m += wbpf.o 
+obj-m += wbpf.o
+wbpf-objs := wbpf_main.o wbpf_device.o
 
 PWD := $(CURDIR)
 KSRC := ${KSRC}
