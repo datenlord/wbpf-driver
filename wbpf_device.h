@@ -2,6 +2,7 @@
 
 #include <linux/module.h>
 #include <linux/clk.h>
+#include <linux/cdev.h>
 
 struct wbpf_device_region {
   phys_addr_t phys;
@@ -18,6 +19,10 @@ struct wbpf_device
   int num_pe;
   uint32_t hw_revision_major;
   uint32_t hw_revision_minor;
+  int irq;
+  int minor;
+  struct cdev cdev;
+  struct device *chrdev;
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);

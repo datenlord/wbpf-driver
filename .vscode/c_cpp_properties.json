@@ -5,6 +5,7 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "/home/ubuntu/Projects/wbpf-linux/linux-xlnx/include",
+                "/home/ubuntu/Projects/wbpf-linux/linux-xlnx/include/uapi",
                 "/home/ubuntu/Projects/wbpf-linux/linux-xlnx/arch/arm/include",
                 "/home/ubuntu/Projects/wbpf-linux/linux-xlnx/arch/arm/include/generated",
                 "/home/ubuntu/Projects/wbpf-linux/linux-xlnx/arch/arm/include/generated/uapi"

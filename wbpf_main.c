@@ -7,7 +7,15 @@
 #include <linux/clk.h>
 #include <asm/io.h>
 #include <linux/device.h>
+#include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/cdev.h>
 #include "wbpf_device.h"
+
+#define DEVICE_NAME "wbpf"
+
+static int major;
+static struct class *dev_cls;
 
 const unsigned long HW_FREQ = 100000000;
 
@@ -20,6 +28,17 @@ static struct of_device_id wbpf_match_table[] = {
     },
     {0}};
 MODULE_DEVICE_TABLE(of, wbpf_match_table);
+
+static int fop_open(struct inode *inode, struct file *filp);
+static int fop_release(struct inode *inode, struct file *filp);
+static int fop_mmap(struct file *filp, struct vm_area_struct *vma);
+
+static const struct file_operations wbpf_fops = {
+    .owner = THIS_MODULE,
+    .open = fop_open,
+    .release = fop_release,
+    .mmap = fop_mmap,
+};
 
 static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
 {
@@ -125,6 +144,8 @@ int wbpf_pd_probe(struct platform_device *pdev)
   pr_info("wbpf: lvl shifter: %x -> %x\n", old_lvl_shifter, readl(lvl_shftr_en));
   iounmap(lvl_shftr_en);
 
+  wdev->irq = irq;
+
   ret = wbpf_device_probe(wdev);
   if (ret)
     return ret;
@@ -133,6 +154,22 @@ int wbpf_pd_probe(struct platform_device *pdev)
   ret = devm_request_irq(&pdev->dev, irq, handle_wbpf_intr, 0, dev_name(&pdev->dev), pdev);
   if (ret)
     return ret;
+
+  // TODO: Allocate minor number
+  cdev_init(&wdev->cdev, &wbpf_fops);
+  wdev->cdev.owner = THIS_MODULE;
+  ret = cdev_add(&wdev->cdev, MKDEV(major, 0), 1);
+  if (ret)
+    return ret;
+
+  wdev->chrdev = device_create(dev_cls, NULL, MKDEV(major, 0),
+                               NULL, DEVICE_NAME);
+  if (IS_ERR(wdev->chrdev))
+  {
+    pr_err("wbpf: failed to create chrdev - error %ld\n", PTR_ERR(wdev->chrdev));
+    cdev_del(&wdev->cdev);
+    return PTR_ERR(wdev->chrdev);
+  }
 
   pr_info("wbpf: device '%s' registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
           pdev->name,
@@ -143,8 +180,12 @@ int wbpf_pd_probe(struct platform_device *pdev)
   return 0;
 }
 
-int wbpf_pd_remove(struct platform_device *dev)
+int wbpf_pd_remove(struct platform_device *pdev)
 {
+  struct wbpf_device *wdev = dev_get_drvdata(&pdev->dev);
+
+  device_destroy(dev_cls, MKDEV(major, 0));
+  cdev_del(&wdev->cdev);
   pr_info("wbpf: platform device removed\n");
   return 0;
 }
@@ -162,21 +203,77 @@ static struct platform_driver wbpf_platform_driver = {
     },
 };
 
+static int fop_open(struct inode *inode, struct file *filp)
+{
+  struct wbpf_device *box = container_of(inode->i_cdev, struct wbpf_device, cdev);
+  filp->private_data = box;
+  try_module_get(THIS_MODULE);
+  return 0;
+}
+
+static int fop_release(struct inode *inode, struct file *filp)
+{
+  module_put(THIS_MODULE);
+  return 0;
+}
+
+static int fop_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+  unsigned long map_len = PAGE_ALIGN(vma->vm_end - vma->vm_start);
+  struct wbpf_device *wdev = filp->private_data;
+  int ret;
+
+  if (map_len > wdev->dm.size)
+  {
+    return -EINVAL;
+  }
+
+  ret = remap_pfn_range(vma, vma->vm_start, wdev->dm.phys >> PAGE_SHIFT, map_len, vma->vm_page_prot);
+  if (ret)
+    return ret;
+
+  return 0;
+}
+
 int init_module(void)
 {
-  int err;
+  int ret;
+  dev_t dev;
 
-  err = platform_driver_register(&wbpf_platform_driver);
-  if (err)
-    return err;
+  ret = alloc_chrdev_region(&dev, 0, 1, "wbpf");
+  if (ret)
+    goto fail_alloc_chrdev;
+  major = MAJOR(dev);
+
+  dev_cls = class_create(THIS_MODULE, DEVICE_NAME);
+  if (IS_ERR(dev_cls))
+  {
+    ret = PTR_ERR(dev_cls);
+    goto fail_class_create;
+  }
+
+  ret = platform_driver_register(&wbpf_platform_driver);
+  if (ret)
+    goto fail_platform_driver_register;
 
   pr_info("wbpf: driver loaded\n");
   return 0;
+
+fail_platform_driver_register:
+  class_destroy(dev_cls);
+
+fail_class_create:
+  unregister_chrdev_region(MKDEV(major, 0), 1);
+
+fail_alloc_chrdev:
+  return ret;
 }
 
 void cleanup_module(void)
 {
   platform_driver_unregister(&wbpf_platform_driver);
+  class_destroy(dev_cls);
+  unregister_chrdev_region(MKDEV(major, 0), 1);
   pr_info("wbpf: driver cleanup\n");
 }
 
