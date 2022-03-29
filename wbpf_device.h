@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/cdev.h>
+#include <linux/dmaengine.h>
 
 struct wbpf_device_region
 {
@@ -26,9 +27,17 @@ struct wbpf_device
   struct cdev cdev;
   struct device *chrdev;
   wait_queue_head_t intr_wq;
+  struct dma_chan *dmem_dma_tx;
+  struct mutex dmem_dma_tx_lock;
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);
+int wbpf_device_init_dma(struct wbpf_device *wdev);
+void wbpf_device_release_dma(struct wbpf_device *wdev);
+int wbpf_device_xmit_data_memory_dma(
+    struct wbpf_device *wdev,
+    uint32_t offset,
+    void *src, uint32_t size);
 
 static inline void __iomem *mmio_base_for_core(struct wbpf_device *wdev, size_t core_index)
 {

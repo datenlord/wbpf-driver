@@ -201,16 +201,21 @@ int wbpf_pd_probe(struct platform_device *pdev)
 
   wdev->irq = irq;
 
+  ret = wbpf_device_init_dma(wdev);
+  if (ret)
+    goto fail_init_dma;
+
   ret = wbpf_device_probe(wdev);
   if (ret)
-    return ret;
+    goto fail_device_probe;
   platform_set_drvdata(pdev, wdev);
 
   wdev->minor = alloc_minor();
   if (wdev->minor < 0)
   {
     pr_err("wbpf: failed to allocate minor number\n");
-    return wdev->minor;
+    ret = wdev->minor;
+    goto fail_minor_alloc;
   }
 
   ret = devm_request_irq(&pdev->dev, irq, handle_wbpf_intr, 0, dev_name(&pdev->dev), pdev);
@@ -247,6 +252,10 @@ fail_device_create:
 fail_cdev_add:
 fail_request_irq:
   release_minor(wdev->minor);
+fail_minor_alloc:
+fail_device_probe:
+  wbpf_device_release_dma(wdev);
+fail_init_dma:
   return ret;
 }
 
@@ -257,6 +266,7 @@ int wbpf_pd_remove(struct platform_device *pdev)
   device_destroy(dev_cls, MKDEV(dev_major, wdev->minor));
   cdev_del(&wdev->cdev);
   release_minor(wdev->minor);
+  wbpf_device_release_dma(wdev);
   pr_info("wbpf: platform device removed\n");
   return 0;
 }
