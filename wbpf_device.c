@@ -18,7 +18,6 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   uint32_t pe_info;
   uint32_t hw_revision;
   uint64_t start_time, end_time;
-  void *zero_buffer;
 
   // Read HW rev
   hw_revision = readl(mmio_base_for_core(wdev, 0) + 0x34);
@@ -54,14 +53,9 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   end_time = ktime_to_ns(ktime_get());
   dev_info(&wdev->pdev->dev, "reset all processing elements in %llu ns\n", end_time - start_time);
 
+  memset(wdev->dmem_dma_buffer, 0, wdev->dm.size);
   start_time = ktime_to_ns(ktime_get());
-  zero_buffer = kzalloc(wdev->dm.size, GFP_KERNEL);
-  if (!zero_buffer)
-  {
-    return -ENOMEM;
-  }
-  ret = wbpf_device_xmit_data_memory_dma(wdev, 0, zero_buffer, wdev->dm.size);
-  kfree(zero_buffer);
+  ret = wbpf_device_xmit_data_memory_dma(wdev, 0, wdev->dmem_dma_buffer_phys_addr, wdev->dm.size);
   if (ret)
   {
     dev_err(&wdev->pdev->dev, "failed to zero data memory\n");
@@ -75,64 +69,75 @@ int wbpf_device_probe(struct wbpf_device *wdev)
 
 int wbpf_device_init_dma(struct wbpf_device *wdev)
 {
+  int ret;
   dma_cap_mask_t dma_mask;
   dma_cap_zero(dma_mask);
   dma_cap_set(DMA_SLAVE, dma_mask);
+
+  if (wdev->dm.size & (PAGE_SIZE - 1))
+  {
+    dev_err(&wdev->pdev->dev, "data memory size must be page aligned\n");
+    return -EINVAL;
+  }
+
+  wdev->dmem_dma_buffer = dma_alloc_coherent(&wdev->pdev->dev, wdev->dm.size, &wdev->dmem_dma_buffer_phys_addr, GFP_KERNEL);
+  if (!wdev->dmem_dma_buffer)
+  {
+    return -ENOMEM;
+  }
 
   wdev->dmem_dma = dma_request_channel(dma_mask, NULL, NULL);
   if (IS_ERR(wdev->dmem_dma))
   {
     dev_err(&wdev->pdev->dev, "failed to allocate DMA channel\n");
-    return PTR_ERR(wdev->dmem_dma);
+    ret = PTR_ERR(wdev->dmem_dma);
+    goto fail_request_channel;
   }
+
   mutex_init(&wdev->dmem_dma_lock);
   return 0;
+
+fail_request_channel:
+  dma_free_coherent(&wdev->pdev->dev, wdev->dm.size, wdev->dmem_dma_buffer, wdev->dmem_dma_buffer_phys_addr);
+  return ret;
 }
 
 void wbpf_device_release_dma(struct wbpf_device *wdev)
 {
   dma_release_channel(wdev->dmem_dma);
+  dma_free_coherent(&wdev->pdev->dev, wdev->dm.size, wdev->dmem_dma_buffer, wdev->dmem_dma_buffer_phys_addr);
 }
 
-static int device_xfer(struct wbpf_device *wdev, uint32_t offset, void *kernel_buffer, uint32_t size, int to_device)
+static int device_xfer(struct wbpf_device *wdev, uint32_t offset, dma_addr_t dma_buffer, uint32_t size, int to_device)
 {
 
   int ret;
   struct dma_async_tx_descriptor *txdesc;
-  struct device *chan_dev = wdev->dmem_dma->device->dev;
-  dma_addr_t dma_buf;
   DECLARE_WAIT_QUEUE_HEAD_ONSTACK(completion);
   struct dmacopy_completion_context completion_ctx = {
       .wq = &completion,
       .done = 0,
   };
-  enum dma_data_direction direction = to_device ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
 
   if (offset + size < offset || offset + size > wdev->dm.size)
   {
     return -EINVAL;
   }
 
-  mutex_lock(&wdev->dmem_dma_lock);
-
-  dma_buf = dma_map_single(chan_dev, kernel_buffer, size, direction);
-  ret = dma_mapping_error(chan_dev, dma_buf);
+  ret = mutex_lock_interruptible(&wdev->dmem_dma_lock);
   if (ret)
-  {
-    dev_err(&wdev->pdev->dev, "xmit: DMA mapping failed\n");
-    goto fail_dma_mapping;
-  }
+    return ret;
 
   if (to_device)
     txdesc = wdev->dmem_dma->device->device_prep_dma_memcpy(
         wdev->dmem_dma,
         wdev->dm.phys + offset,
-        dma_buf,
+        dma_buffer,
         size, 0);
   else
     txdesc = wdev->dmem_dma->device->device_prep_dma_memcpy(
         wdev->dmem_dma,
-        dma_buf,
+        dma_buffer,
         wdev->dm.phys + offset,
         size, 0);
 
@@ -157,8 +162,6 @@ static int device_xfer(struct wbpf_device *wdev, uint32_t offset, void *kernel_b
 
 fail_submit:
 fail_prep:
-  dma_unmap_single(chan_dev, dma_buf, size, direction);
-fail_dma_mapping:
   mutex_unlock(&wdev->dmem_dma_lock);
   return ret;
 }
@@ -166,7 +169,7 @@ fail_dma_mapping:
 int wbpf_device_xmit_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
-    void *src, uint32_t size)
+    dma_addr_t src, uint32_t size)
 {
   return device_xfer(wdev, offset, src, size, 1);
 }
@@ -174,7 +177,7 @@ int wbpf_device_xmit_data_memory_dma(
 int wbpf_device_recv_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
-    void *dst, uint32_t size)
+    dma_addr_t dst, uint32_t size)
 {
   return device_xfer(wdev, offset, dst, size, 0);
 }

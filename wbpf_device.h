@@ -30,6 +30,8 @@ struct wbpf_device
   struct device *chrdev;
   wait_queue_head_t intr_wq;
   struct dma_chan *dmem_dma;
+  void *dmem_dma_buffer;
+  dma_addr_t dmem_dma_buffer_phys_addr;
   struct mutex dmem_dma_lock;
 };
 
@@ -39,11 +41,11 @@ void wbpf_device_release_dma(struct wbpf_device *wdev);
 int wbpf_device_xmit_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
-    void *src, uint32_t size);
+    dma_addr_t src, uint32_t size);
 int wbpf_device_recv_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
-    void *dst, uint32_t size);
+    dma_addr_t dst, uint32_t size);
 
 static inline void __iomem *mmio_base_for_core(struct wbpf_device *wdev, size_t core_index)
 {
