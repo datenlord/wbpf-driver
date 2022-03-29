@@ -11,19 +11,23 @@
 #include <linux/mm.h>
 #include <linux/cdev.h>
 #include <linux/slab.h>
+#include <linux/poll.h>
 #include "wbpf_device.h"
 #include "wbpf_uapi.h"
 
 #define DEVICE_NAME "wbpf"
+#define MAX_NUM_DEVICES 16
 
-// TODO: Multiple devices
-static dev_t dev_singleton;
+static uint8_t minor_alloc_state[MAX_NUM_DEVICES];
+DEFINE_MUTEX(minor_alloc_lock);
+
+static int dev_major;
 static struct class *dev_cls;
 
-const unsigned long HW_FREQ = 100000000;
+static const unsigned long HW_FREQ = 100000000;
 
 // TODO: DT
-unsigned long LVL_SHFTR_EN = 0xF8000900;
+static const unsigned long LVL_SHFTR_EN = 0xF8000900;
 
 static struct of_device_id wbpf_match_table[] = {
     {
@@ -36,6 +40,7 @@ static int fop_open(struct inode *inode, struct file *filp);
 static int fop_release(struct inode *inode, struct file *filp);
 static int fop_mmap(struct file *filp, struct vm_area_struct *vma);
 static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+static unsigned int fop_poll(struct file *filp, struct poll_table_struct *wait);
 
 static const struct file_operations wbpf_fops = {
     .owner = THIS_MODULE,
@@ -43,6 +48,7 @@ static const struct file_operations wbpf_fops = {
     .release = fop_release,
     .mmap = fop_mmap,
     .unlocked_ioctl = fop_ioctl,
+    .poll = fop_poll,
 };
 
 static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
@@ -66,6 +72,32 @@ static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
   }
 
   return IRQ_HANDLED;
+}
+
+static int alloc_minor(void)
+{
+  int i;
+
+  mutex_lock(&minor_alloc_lock);
+  for (i = 0; i < MAX_NUM_DEVICES; i++)
+  {
+    if (minor_alloc_state[i] == 0)
+    {
+      minor_alloc_state[i] = 1;
+      mutex_unlock(&minor_alloc_lock);
+      return i;
+    }
+  }
+  mutex_unlock(&minor_alloc_lock);
+  return -ENODEV;
+}
+
+static int release_minor(int minor)
+{
+  mutex_lock(&minor_alloc_lock);
+  minor_alloc_state[minor] = 0;
+  mutex_unlock(&minor_alloc_lock);
+  return 0;
 }
 
 static int load_wbpf_device_region(struct wbpf_device_region *region, struct device *dev, struct resource *res)
@@ -131,6 +163,8 @@ int wbpf_pd_probe(struct platform_device *pdev)
     return -ENOMEM;
   }
 
+  init_waitqueue_head(&wdev->intr_wq);
+
   ret = load_wbpf_device_region(&wdev->mmio, &pdev->dev, memres_mmio);
   if (ret)
     return ret;
@@ -172,25 +206,32 @@ int wbpf_pd_probe(struct platform_device *pdev)
     return ret;
   platform_set_drvdata(pdev, wdev);
 
+  wdev->minor = alloc_minor();
+  if (wdev->minor < 0)
+  {
+    pr_err("wbpf: failed to allocate minor number\n");
+    return wdev->minor;
+  }
+
   ret = devm_request_irq(&pdev->dev, irq, handle_wbpf_intr, 0, dev_name(&pdev->dev), pdev);
   if (ret)
-    return ret;
+    goto fail_request_irq;
 
   cdev_init(&wdev->cdev, &wbpf_fops);
   wdev->cdev.owner = THIS_MODULE;
 
   // TODO: Review ownership issue
-  ret = cdev_add(&wdev->cdev, dev_singleton, 1);
+  ret = cdev_add(&wdev->cdev, MKDEV(dev_major, wdev->minor), 1);
   if (ret)
-    return ret;
+    goto fail_cdev_add;
 
-  wdev->chrdev = device_create(dev_cls, NULL, dev_singleton,
+  wdev->chrdev = device_create(dev_cls, NULL, MKDEV(dev_major, wdev->minor),
                                NULL, pdev->name);
   if (IS_ERR(wdev->chrdev))
   {
-    pr_err("wbpf: failed to create chrdev - error %ld\n", PTR_ERR(wdev->chrdev));
-    cdev_del(&wdev->cdev);
-    return PTR_ERR(wdev->chrdev);
+    ret = PTR_ERR(wdev->chrdev);
+    pr_err("wbpf: failed to create chrdev - error %d\n", ret);
+    goto fail_device_create;
   }
 
   pr_info("wbpf: device '%s' registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
@@ -200,14 +241,22 @@ int wbpf_pd_probe(struct platform_device *pdev)
           memres_dm->start, memres_dm->end);
 
   return 0;
+
+fail_device_create:
+  cdev_del(&wdev->cdev);
+fail_cdev_add:
+fail_request_irq:
+  release_minor(wdev->minor);
+  return ret;
 }
 
 int wbpf_pd_remove(struct platform_device *pdev)
 {
   struct wbpf_device *wdev = dev_get_drvdata(&pdev->dev);
 
-  device_destroy(dev_cls, dev_singleton);
+  device_destroy(dev_cls, MKDEV(dev_major, wdev->minor));
   cdev_del(&wdev->cdev);
+  release_minor(wdev->minor);
   pr_info("wbpf: platform device removed\n");
   return 0;
 }
@@ -229,13 +278,11 @@ static int fop_open(struct inode *inode, struct file *filp)
 {
   struct wbpf_device *box = container_of(inode->i_cdev, struct wbpf_device, cdev);
   filp->private_data = box;
-  try_module_get(THIS_MODULE);
   return 0;
 }
 
 static int fop_release(struct inode *inode, struct file *filp)
 {
-  module_put(THIS_MODULE);
   return 0;
 }
 
@@ -343,13 +390,23 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
   }
 }
 
+static unsigned int fop_poll(struct file *filp, struct poll_table_struct *wait)
+{
+  // https://stackoverflow.com/a/30038432
+  struct wbpf_device *wdev = filp->private_data;
+  poll_wait(filp, &wdev->intr_wq, wait);
+  return 0;
+}
+
 int init_module(void)
 {
   int ret;
+  dev_t allocated_region;
 
-  ret = alloc_chrdev_region(&dev_singleton, 0, 1, "wbpf");
+  ret = alloc_chrdev_region(&allocated_region, 0, MAX_NUM_DEVICES, "wbpf");
   if (ret)
     goto fail_alloc_chrdev;
+  dev_major = MAJOR(allocated_region);
 
   dev_cls = class_create(THIS_MODULE, DEVICE_NAME);
   if (IS_ERR(dev_cls))
@@ -369,7 +426,7 @@ fail_platform_driver_register:
   class_destroy(dev_cls);
 
 fail_class_create:
-  unregister_chrdev_region(dev_singleton, 1);
+  unregister_chrdev_region(allocated_region, MAX_NUM_DEVICES);
 
 fail_alloc_chrdev:
   return ret;
@@ -379,7 +436,7 @@ void cleanup_module(void)
 {
   platform_driver_unregister(&wbpf_platform_driver);
   class_destroy(dev_cls);
-  unregister_chrdev_region(dev_singleton, 1);
+  unregister_chrdev_region(MKDEV(dev_major, 0), MAX_NUM_DEVICES);
   pr_info("wbpf: driver cleanup\n");
 }
 

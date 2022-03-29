@@ -4,7 +4,8 @@
 #include <linux/clk.h>
 #include <linux/cdev.h>
 
-struct wbpf_device_region {
+struct wbpf_device_region
+{
   phys_addr_t phys;
   void __iomem *virt;
   size_t size;
@@ -23,10 +24,12 @@ struct wbpf_device
   int minor;
   struct cdev cdev;
   struct device *chrdev;
+  wait_queue_head_t intr_wq;
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);
 
-static inline void __iomem * mmio_base_for_core(struct wbpf_device *wdev, size_t core_index) {
+static inline void __iomem *mmio_base_for_core(struct wbpf_device *wdev, size_t core_index)
+{
   return wdev->mmio.virt + (core_index + 1) * 0x1000UL;
 }
