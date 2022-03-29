@@ -3,6 +3,14 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 
+struct dmacopy_completion_context
+{
+  struct wait_queue_head *wq;
+  uint8_t done;
+};
+
+static void dmacopy_completion(void *arg);
+
 int wbpf_device_probe(struct wbpf_device *wdev)
 {
   unsigned long i;
@@ -71,40 +79,43 @@ int wbpf_device_init_dma(struct wbpf_device *wdev)
   dma_cap_zero(dma_mask);
   dma_cap_set(DMA_SLAVE, dma_mask);
 
-  wdev->dmem_dma_tx = dma_request_channel(dma_mask, NULL, NULL);
-  if (IS_ERR(wdev->dmem_dma_tx))
+  wdev->dmem_dma = dma_request_channel(dma_mask, NULL, NULL);
+  if (IS_ERR(wdev->dmem_dma))
   {
     pr_err("wbpf: failed to allocate DMA channel\n");
-    return PTR_ERR(wdev->dmem_dma_tx);
+    return PTR_ERR(wdev->dmem_dma);
   }
-  mutex_init(&wdev->dmem_dma_tx_lock);
+  mutex_init(&wdev->dmem_dma_lock);
   return 0;
 }
 
 void wbpf_device_release_dma(struct wbpf_device *wdev)
 {
-  dma_release_channel(wdev->dmem_dma_tx);
+  dma_release_channel(wdev->dmem_dma);
 }
 
-int wbpf_device_xmit_data_memory_dma(
-    struct wbpf_device *wdev,
-    uint32_t offset,
-    void *src, uint32_t size)
+static int device_xfer(struct wbpf_device *wdev, uint32_t offset, void *kernel_buffer, uint32_t size, int to_device)
 {
+
   int ret;
   struct dma_async_tx_descriptor *txdesc;
-  struct device *chan_dev = wdev->dmem_dma_tx->device->dev;
+  struct device *chan_dev = wdev->dmem_dma->device->dev;
   dma_addr_t dma_buf;
-  enum dma_status status;
+  DECLARE_WAIT_QUEUE_HEAD_ONSTACK(completion);
+  struct dmacopy_completion_context completion_ctx = {
+      .wq = &completion,
+      .done = 0,
+  };
+  enum dma_data_direction direction = to_device ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
 
   if (offset + size < offset || offset + size > wdev->dm.size)
   {
     return -EINVAL;
   }
 
-  mutex_lock(&wdev->dmem_dma_tx_lock);
+  mutex_lock(&wdev->dmem_dma_lock);
 
-  dma_buf = dma_map_single(chan_dev, src, size, DMA_TO_DEVICE);
+  dma_buf = dma_map_single(chan_dev, kernel_buffer, size, direction);
   ret = dma_mapping_error(chan_dev, dma_buf);
   if (ret)
   {
@@ -112,11 +123,18 @@ int wbpf_device_xmit_data_memory_dma(
     goto fail_dma_mapping;
   }
 
-  txdesc = wdev->dmem_dma_tx->device->device_prep_dma_memcpy(
-      wdev->dmem_dma_tx,
-      wdev->dm.phys + offset,
-      dma_buf,
-      size, 0);
+  if (to_device)
+    txdesc = wdev->dmem_dma->device->device_prep_dma_memcpy(
+        wdev->dmem_dma,
+        wdev->dm.phys + offset,
+        dma_buf,
+        size, 0);
+  else
+    txdesc = wdev->dmem_dma->device->device_prep_dma_memcpy(
+        wdev->dmem_dma,
+        dma_buf,
+        wdev->dm.phys + offset,
+        size, 0);
 
   if (!txdesc)
   {
@@ -124,6 +142,8 @@ int wbpf_device_xmit_data_memory_dma(
     goto fail_prep;
   }
 
+  txdesc->callback = dmacopy_completion;
+  txdesc->callback_param = &completion_ctx;
   ret = dma_submit_error(dmaengine_submit(txdesc));
   if (ret)
   {
@@ -131,21 +151,37 @@ int wbpf_device_xmit_data_memory_dma(
     goto fail_submit;
   }
 
-  status = dma_wait_for_async_tx(txdesc);
-  if (status != DMA_COMPLETE)
-  {
-    pr_err("wbpf: xmit: DMA wait failed\n");
-    ret = -EINVAL;
-    goto fail_wait;
-  }
-
+  dma_async_issue_pending(wdev->dmem_dma);
+  wait_event(completion, completion_ctx.done);
   ret = 0;
 
-fail_wait:
 fail_submit:
 fail_prep:
-  dma_unmap_single(chan_dev, dma_buf, size, DMA_TO_DEVICE);
+  dma_unmap_single(chan_dev, dma_buf, size, direction);
 fail_dma_mapping:
-  mutex_unlock(&wdev->dmem_dma_tx_lock);
+  mutex_unlock(&wdev->dmem_dma_lock);
   return ret;
+}
+
+int wbpf_device_xmit_data_memory_dma(
+    struct wbpf_device *wdev,
+    uint32_t offset,
+    void *src, uint32_t size)
+{
+  return device_xfer(wdev, offset, src, size, 1);
+}
+
+int wbpf_device_recv_data_memory_dma(
+    struct wbpf_device *wdev,
+    uint32_t offset,
+    void *dst, uint32_t size)
+{
+  return device_xfer(wdev, offset, dst, size, 0);
+}
+
+static void dmacopy_completion(void *arg)
+{
+  struct dmacopy_completion_context *ctx = arg;
+  ctx->done = 1;
+  wake_up_all(ctx->wq);
 }
