@@ -36,29 +36,6 @@ static struct of_device_id wbpf_match_table[] = {
     {0}};
 MODULE_DEVICE_TABLE(of, wbpf_match_table);
 
-static irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
-{
-  struct platform_device *pdev = pdev_v;
-  struct wbpf_device *wdev = platform_get_drvdata(pdev);
-  int i;
-  uint32_t __iomem *code_reg;
-  uint32_t code;
-
-  printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
-  for (i = 0; i < wdev->num_pe; i++)
-  {
-    code_reg = mmio_base_for_core(wdev, i) + 0x20;
-    code = readl(code_reg);
-    if (code)
-    {
-      printk(KERN_INFO "wbpf: code %d from processing element %d\n", code, i);
-      writel(0x1, code_reg);
-    }
-  }
-
-  return IRQ_HANDLED;
-}
-
 static int alloc_minor(void)
 {
   int i;
@@ -256,7 +233,6 @@ static struct platform_driver wbpf_platform_driver = {
         .of_match_table = of_match_ptr(wbpf_match_table),
     },
 };
-
 
 static int global_hw_init(void)
 {

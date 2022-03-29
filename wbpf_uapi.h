@@ -11,8 +11,10 @@
 #define WBPF_IOC_WRITE_DM _IOW(WBPF_IOC_MAGIC, 4, struct wbpf_uapi_write_dm_args)
 #define WBPF_IOC_READ_DM _IOW(WBPF_IOC_MAGIC, 5, struct wbpf_uapi_read_dm_args)
 #define WBPF_IOC_GET_HW_REVISION _IOR(WBPF_IOC_MAGIC, 6, struct wbpf_uapi_hw_revision)
+#define WBPF_IOC_GET_NUM_PE _IOR(WBPF_IOC_MAGIC, 7, struct wbpf_uapi_num_pe)
 
 #define MAX_LOAD_CODE_SIZE 16384
+#define MAX_NUM_PE 16
 
 struct wbpf_uapi_load_code_args
 {
@@ -51,6 +53,18 @@ struct wbpf_uapi_hw_revision
 {
   uint32_t major;
   uint32_t minor;
+};
+
+struct wbpf_uapi_num_pe
+{
+  uint32_t num_pe;
+};
+
+struct wbpf_uapi_pe_exception_state
+{
+  uint32_t pc;
+  uint32_t code;
+  uint64_t data;
 };
 
 union wbpf_uapi_arg

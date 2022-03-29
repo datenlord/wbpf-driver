@@ -5,6 +5,8 @@
 #include <linux/cdev.h>
 #include <linux/dmaengine.h>
 #include <linux/platform_device.h>
+#include <linux/interrupt.h>
+#include "wbpf_uapi.h"
 
 struct wbpf_device_region
 {
@@ -20,7 +22,7 @@ struct wbpf_device
   struct clk *clk;
   struct platform_device *pdev;
 
-  int num_pe;
+  uint32_t num_pe;
   uint32_t hw_revision_major;
   uint32_t hw_revision_minor;
   int irq;
@@ -34,6 +36,10 @@ struct wbpf_device
   void *dmem_dma_buffer;
   dma_addr_t dmem_dma_buffer_phys_addr;
   struct mutex dmem_dma_buffer_lock;
+
+  spinlock_t pe_exc_lock;
+  struct wbpf_uapi_pe_exception_state pe_exc[MAX_NUM_PE];
+  uint64_t pe_exc_generation; // used by userspace poll
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);
@@ -47,6 +53,7 @@ int wbpf_device_recv_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
     dma_addr_t dst, uint32_t size);
+irqreturn_t handle_wbpf_intr(int irq, void *pdev_v);
 
 static inline void __iomem *mmio_base_for_core(struct wbpf_device *wdev, size_t core_index)
 {

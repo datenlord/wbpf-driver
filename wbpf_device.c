@@ -11,6 +11,55 @@ struct dmacopy_completion_context
 
 static void dmacopy_completion(void *arg);
 
+static void lock_and_update_pe_exc(struct wbpf_device *wdev)
+{
+  long i;
+  unsigned long irq_flags;
+  uint8_t new_generation = 0;
+
+  BUG_ON(wdev->num_pe > MAX_NUM_PE);
+
+  spin_lock_irqsave(&wdev->pe_exc_lock, irq_flags);
+  memset(&wdev->pe_exc, 0, sizeof(wdev->pe_exc));
+
+  for (i = 0; i < wdev->num_pe; i++)
+  {
+    void *base = mmio_base_for_core(wdev, i);
+    void *code_reg = base + 0x20;
+    void *pc_reg = base + 0x18;
+    void *data_lower_reg = base + 0x28;
+    void *data_upper_reg = base + 0x2c;
+    uint32_t new_code;
+
+    // XXX: Ordering: `code` must be read first.
+    // Exceptions do not disappear automatically but new exceptions may appear when we are reading
+    // the registers.
+    new_code = readl(code_reg);
+    if (new_code != wdev->pe_exc[i].code)
+    {
+      wdev->pe_exc[i].code = new_code;
+
+      // If the code changed from any value to a new non-zero value, notify userspace.
+      if (new_code)
+        new_generation = 1;
+    }
+
+    if (new_code)
+    {
+      wdev->pe_exc[i].pc = readl(pc_reg);
+      wdev->pe_exc[i].data = (((uint64_t)readl(data_upper_reg)) << 32) | (uint64_t)readl(data_lower_reg);
+      writel(0x1, code_reg); // ack
+    }
+  }
+
+  if (new_generation)
+  {
+    wdev->pe_exc_generation++;
+  }
+
+  spin_unlock_irqrestore(&wdev->pe_exc_lock, irq_flags);
+}
+
 int wbpf_device_probe(struct wbpf_device *wdev)
 {
   unsigned long i;
@@ -33,6 +82,11 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   // Read PE info
   pe_info = readl(mmio_base_for_core(wdev, 0) + 0x30);
   wdev->num_pe = pe_info >> 16;
+  if (wdev->num_pe == 0 || wdev->num_pe > MAX_NUM_PE)
+  {
+    dev_err(&wdev->pdev->dev, "unsupported number of processing elements: %u\n", wdev->num_pe);
+    return -ENODEV;
+  }
 
   dev_info(&wdev->pdev->dev, "hardware revision: %u.%u, number of processing elements: %d\n",
            wdev->hw_revision_major, wdev->hw_revision_minor,
@@ -48,10 +102,13 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   {
     while (readl(mmio_base_for_core(wdev, i) + 0x20) != WBPF_EXC_STOP)
       cpu_relax();
-    writel(0x1, mmio_base_for_core(wdev, i) + 0x20); // ack exception
+    // Do not ack yet - `lock_and_update_pe_exc` will do it
   }
   end_time = ktime_to_ns(ktime_get());
   dev_info(&wdev->pdev->dev, "reset all processing elements in %llu ns\n", end_time - start_time);
+
+  // Initial exception state
+  lock_and_update_pe_exc(wdev);
 
   memset(wdev->dmem_dma_buffer, 0, wdev->dm.size);
   start_time = ktime_to_ns(ktime_get());
@@ -202,4 +259,14 @@ static void dmacopy_completion(void *arg)
   struct dmacopy_completion_context *ctx = arg;
   ctx->done = 1;
   wake_up_all(ctx->wq);
+}
+
+irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
+{
+  struct platform_device *pdev = pdev_v;
+  struct wbpf_device *wdev = platform_get_drvdata(pdev);
+
+  printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
+  lock_and_update_pe_exc(wdev);
+  return IRQ_HANDLED;
 }
