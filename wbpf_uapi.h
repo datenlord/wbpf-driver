@@ -10,6 +10,7 @@
 #define WBPF_IOC_START _IOW(WBPF_IOC_MAGIC, 3, struct wbpf_uapi_start_args)
 #define WBPF_IOC_WRITE_DM _IOW(WBPF_IOC_MAGIC, 4, struct wbpf_uapi_write_dm_args)
 #define WBPF_IOC_READ_DM _IOW(WBPF_IOC_MAGIC, 5, struct wbpf_uapi_read_dm_args)
+#define WBPF_IOC_GET_HW_REVISION _IOR(WBPF_IOC_MAGIC, 6, struct wbpf_uapi_hw_revision)
 
 #define MAX_LOAD_CODE_SIZE 16384
 
@@ -44,6 +45,12 @@ struct wbpf_uapi_read_dm_args
   uint32_t offset;
   unsigned long data; // uaddr
   uint32_t data_len;
+};
+
+struct wbpf_uapi_hw_revision
+{
+  uint32_t major;
+  uint32_t minor;
 };
 
 union wbpf_uapi_arg

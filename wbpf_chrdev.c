@@ -172,6 +172,16 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
     mutex_unlock(&wdev->dmem_dma_buffer_lock);
     return ret;
+  case WBPF_IOC_GET_HW_REVISION:
+  {
+    struct wbpf_uapi_hw_revision hw_revision = {
+        .major = wdev->hw_revision_major,
+        .minor = wdev->hw_revision_minor,
+    };
+    if (copy_to_user((void __user *)arg, &hw_revision, sizeof(hw_revision)))
+      return -EFAULT;
+    return 0;
+  }
   default:
     return -ENOTTY;
   }
