@@ -95,6 +95,7 @@ int wbpf_device_init_dma(struct wbpf_device *wdev)
   }
 
   mutex_init(&wdev->dmem_dma_lock);
+  mutex_init(&wdev->dmem_dma_buffer_lock);
   return 0;
 
 fail_request_channel:
@@ -104,13 +105,14 @@ fail_request_channel:
 
 void wbpf_device_release_dma(struct wbpf_device *wdev)
 {
+  mutex_destroy(&wdev->dmem_dma_buffer_lock);
+  mutex_destroy(&wdev->dmem_dma_lock);
   dma_release_channel(wdev->dmem_dma);
   dma_free_coherent(&wdev->pdev->dev, wdev->dm.size, wdev->dmem_dma_buffer, wdev->dmem_dma_buffer_phys_addr);
 }
 
 static int device_xfer(struct wbpf_device *wdev, uint32_t offset, dma_addr_t dma_buffer, uint32_t size, int to_device)
 {
-
   int ret;
   struct dma_async_tx_descriptor *txdesc;
   DECLARE_WAIT_QUEUE_HEAD_ONSTACK(completion);
@@ -119,8 +121,21 @@ static int device_xfer(struct wbpf_device *wdev, uint32_t offset, dma_addr_t dma
       .done = 0,
   };
 
+  if ((offset & 0x7) || (size & 0x7))
+  {
+    dev_err(&wdev->pdev->dev, "offset and size must be 8 byte aligned\n");
+    return -EINVAL;
+  }
+
+  if (size == 0)
+  {
+    dev_err(&wdev->pdev->dev, "size must be greater than 0\n");
+    return -EINVAL;
+  }
+
   if (offset + size < offset || offset + size > wdev->dm.size)
   {
+    dev_err(&wdev->pdev->dev, "invalid size\n");
     return -EINVAL;
   }
 

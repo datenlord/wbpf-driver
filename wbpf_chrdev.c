@@ -48,7 +48,7 @@ static int fop_mmap(struct file *filp, struct vm_area_struct *vma)
 
 static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-  int i;
+  int i, ret;
   struct wbpf_device *wdev = filp->private_data;
   union wbpf_uapi_arg user_arg;
   uint8_t *buffer;
@@ -127,6 +127,51 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     io_addr = mmio_base_for_core(wdev, user_arg.start.pe_index);
     writel(user_arg.start.pc, io_addr + 0x18);
     return 0;
+  case WBPF_IOC_WRITE_DM:
+    if (copy_from_user(&user_arg.write_dm, (void __user *)arg, sizeof(user_arg.write_dm)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.write_dm.offset + user_arg.write_dm.data_len < user_arg.write_dm.offset ||
+        user_arg.write_dm.offset + user_arg.write_dm.data_len > wdev->dm.size)
+    {
+      return -EINVAL;
+    }
+    ret = mutex_lock_interruptible(&wdev->dmem_dma_buffer_lock);
+    if (ret)
+      return ret;
+    if (copy_from_user(wdev->dmem_dma_buffer, (void __user *)user_arg.write_dm.data, user_arg.write_dm.data_len))
+    {
+      mutex_unlock(&wdev->dmem_dma_buffer_lock);
+      return -EFAULT;
+    }
+    ret = wbpf_device_xmit_data_memory_dma(wdev, user_arg.write_dm.offset, wdev->dmem_dma_buffer_phys_addr, user_arg.write_dm.data_len);
+    mutex_unlock(&wdev->dmem_dma_buffer_lock);
+    return ret;
+  case WBPF_IOC_READ_DM:
+    if (copy_from_user(&user_arg.read_dm, (void __user *)arg, sizeof(user_arg.read_dm)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.read_dm.offset + user_arg.read_dm.data_len < user_arg.read_dm.offset ||
+        user_arg.read_dm.offset + user_arg.read_dm.data_len > wdev->dm.size)
+    {
+      return -EINVAL;
+    }
+    ret = mutex_lock_interruptible(&wdev->dmem_dma_buffer_lock);
+    if (ret)
+      return ret;
+
+    ret = wbpf_device_recv_data_memory_dma(wdev, user_arg.read_dm.offset, wdev->dmem_dma_buffer_phys_addr, user_arg.read_dm.data_len);
+    if (!ret)
+    {
+      unsigned long copy_ret = copy_to_user((void __user *)user_arg.read_dm.data, wdev->dmem_dma_buffer, user_arg.read_dm.data_len);
+      if (copy_ret)
+        ret = -EFAULT;
+    }
+
+    mutex_unlock(&wdev->dmem_dma_buffer_lock);
+    return ret;
   default:
     return -ENOTTY;
   }

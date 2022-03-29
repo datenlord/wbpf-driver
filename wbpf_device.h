@@ -30,9 +30,10 @@ struct wbpf_device
   struct device *chrdev;
   wait_queue_head_t intr_wq;
   struct dma_chan *dmem_dma;
+  struct mutex dmem_dma_lock;
   void *dmem_dma_buffer;
   dma_addr_t dmem_dma_buffer_phys_addr;
-  struct mutex dmem_dma_lock;
+  struct mutex dmem_dma_buffer_lock;
 };
 
 int wbpf_device_probe(struct wbpf_device *wdev);
