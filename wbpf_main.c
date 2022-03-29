@@ -1,7 +1,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
-#include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
@@ -134,10 +133,8 @@ int wbpf_pd_probe(struct platform_device *pdev)
 {
   int ret, irq;
   unsigned long old_rate;
-  uint32_t old_lvl_shifter;
   struct resource *memres_mmio, *memres_dm;
   struct wbpf_device *wdev;
-  void __iomem *lvl_shftr_en;
 
   irq = platform_get_irq(pdev, 0);
   if (irq < 0)
@@ -146,14 +143,14 @@ int wbpf_pd_probe(struct platform_device *pdev)
   memres_mmio = platform_get_resource(pdev, IORESOURCE_MEM, 0);
   if (!memres_mmio)
   {
-    pr_err("wbpf: failed to get mmio region\n");
+    dev_err(&pdev->dev, "failed to get mmio region\n");
     return -EINVAL;
   }
 
   memres_dm = platform_get_resource(pdev, IORESOURCE_MEM, 1);
   if (!memres_dm)
   {
-    pr_err("wbpf: failed to get dm region\n");
+    dev_err(&pdev->dev, "failed to get dm region\n");
     return -EINVAL;
   }
 
@@ -162,6 +159,8 @@ int wbpf_pd_probe(struct platform_device *pdev)
   {
     return -ENOMEM;
   }
+
+  wdev->pdev = pdev;
 
   init_waitqueue_head(&wdev->intr_wq);
 
@@ -175,7 +174,7 @@ int wbpf_pd_probe(struct platform_device *pdev)
   wdev->clk = devm_clk_get(&pdev->dev, NULL);
   if (IS_ERR(wdev->clk))
   {
-    pr_err("wbpf: failed to get clock\n");
+    dev_err(&pdev->dev, "failed to get clock\n");
     return PTR_ERR(wdev->clk);
   }
 
@@ -183,21 +182,10 @@ int wbpf_pd_probe(struct platform_device *pdev)
   ret = clk_set_rate(wdev->clk, HW_FREQ);
   if (ret)
   {
-    pr_err("wbpf: failed to set clock rate\n");
+    dev_err(&pdev->dev, "failed to set clock rate\n");
     return ret;
   }
-  pr_info("wbpf: clk rate: %lu -> %lu\n", old_rate, clk_get_rate(wdev->clk));
-
-  lvl_shftr_en = ioremap(LVL_SHFTR_EN, 4);
-  if (!lvl_shftr_en)
-  {
-    return -ENOMEM;
-  }
-
-  old_lvl_shifter = readl(lvl_shftr_en);
-  writel(0xf, lvl_shftr_en);
-  pr_info("wbpf: lvl shifter: %x -> %x\n", old_lvl_shifter, readl(lvl_shftr_en));
-  iounmap(lvl_shftr_en);
+  dev_info(&pdev->dev, "clk rate: %lu -> %lu\n", old_rate, clk_get_rate(wdev->clk));
 
   wdev->irq = irq;
 
@@ -213,7 +201,7 @@ int wbpf_pd_probe(struct platform_device *pdev)
   wdev->minor = alloc_minor();
   if (wdev->minor < 0)
   {
-    pr_err("wbpf: failed to allocate minor number\n");
+    dev_err(&pdev->dev, "failed to allocate minor number\n");
     ret = wdev->minor;
     goto fail_minor_alloc;
   }
@@ -235,15 +223,14 @@ int wbpf_pd_probe(struct platform_device *pdev)
   if (IS_ERR(wdev->chrdev))
   {
     ret = PTR_ERR(wdev->chrdev);
-    pr_err("wbpf: failed to create chrdev - error %d\n", ret);
+    dev_err(&pdev->dev, "failed to create chrdev - error %d\n", ret);
     goto fail_device_create;
   }
 
-  pr_info("wbpf: device '%s' registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
-          pdev->name,
-          irq,
-          memres_mmio->start, memres_mmio->end,
-          memres_dm->start, memres_dm->end);
+  dev_info(&pdev->dev, "device registered. irq %d, mmio %08x-%08x, dm %08x-%08x\n",
+           irq,
+           memres_mmio->start, memres_mmio->end,
+           memres_dm->start, memres_dm->end);
 
   return 0;
 
@@ -267,7 +254,7 @@ int wbpf_pd_remove(struct platform_device *pdev)
   cdev_del(&wdev->cdev);
   release_minor(wdev->minor);
   wbpf_device_release_dma(wdev);
-  pr_info("wbpf: platform device removed\n");
+  dev_info(&pdev->dev, "platform device removed\n");
   return 0;
 }
 
@@ -370,10 +357,10 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
       writel(*(code_pointer++), io_addr + 0x10);
     }
 
-    pr_info("wbpf: code of %u bytes loaded to processing element %u offset %u\n",
-            user_arg.load_code.code_len,
-            user_arg.load_code.pe_index,
-            user_arg.load_code.offset);
+    dev_info(&wdev->pdev->dev, "code of %u bytes loaded to processing element %u offset %u\n",
+             user_arg.load_code.code_len,
+             user_arg.load_code.pe_index,
+             user_arg.load_code.offset);
 
     kfree(buffer);
     return 0;
@@ -414,10 +401,32 @@ static unsigned int fop_poll(struct file *filp, struct poll_table_struct *wait)
   return 0;
 }
 
+static int global_hw_init(void)
+{
+  void __iomem *lvl_shftr_en;
+  uint32_t old_lvl_shifter;
+
+  lvl_shftr_en = ioremap(LVL_SHFTR_EN, 4);
+  if (!lvl_shftr_en)
+  {
+    return -ENOMEM;
+  }
+
+  old_lvl_shifter = readl(lvl_shftr_en);
+  writel(0xf, lvl_shftr_en);
+  pr_info("wbpf: lvl shifter: %x -> %x\n", old_lvl_shifter, readl(lvl_shftr_en));
+  iounmap(lvl_shftr_en);
+  return 0;
+}
+
 int init_module(void)
 {
   int ret;
   dev_t allocated_region;
+
+  ret = global_hw_init();
+  if (ret)
+    goto fail_global_hw_init;
 
   ret = alloc_chrdev_region(&allocated_region, 0, MAX_NUM_DEVICES, "wbpf");
   if (ret)
@@ -445,6 +454,7 @@ fail_class_create:
   unregister_chrdev_region(allocated_region, MAX_NUM_DEVICES);
 
 fail_alloc_chrdev:
+fail_global_hw_init:
   return ret;
 }
 

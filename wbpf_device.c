@@ -26,8 +26,8 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   wdev->hw_revision_minor = hw_revision & 0xffff;
   if (wdev->hw_revision_major != 1)
   {
-    pr_err("wbpf: unsupported hardware revision: %u.%u\n",
-           wdev->hw_revision_major, wdev->hw_revision_minor);
+    dev_err(&wdev->pdev->dev, "unsupported hardware revision: %u.%u\n",
+            wdev->hw_revision_major, wdev->hw_revision_minor);
     return -ENODEV;
   }
 
@@ -35,9 +35,9 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   pe_info = readl(mmio_base_for_core(wdev, 0) + 0x30);
   wdev->num_pe = pe_info >> 16;
 
-  pr_info("wbpf: hardware revision: %u.%u, number of processing elements: %d\n",
-          wdev->hw_revision_major, wdev->hw_revision_minor,
-          wdev->num_pe);
+  dev_info(&wdev->pdev->dev, "hardware revision: %u.%u, number of processing elements: %d\n",
+           wdev->hw_revision_major, wdev->hw_revision_minor,
+           wdev->num_pe);
 
   // At this point we haven't enabled IRQ yet.
   start_time = ktime_to_ns(ktime_get());
@@ -52,7 +52,7 @@ int wbpf_device_probe(struct wbpf_device *wdev)
     writel(0x1, mmio_base_for_core(wdev, i) + 0x20); // ack exception
   }
   end_time = ktime_to_ns(ktime_get());
-  pr_info("wbpf: reset all processing elements in %llu ns\n", end_time - start_time);
+  dev_info(&wdev->pdev->dev, "reset all processing elements in %llu ns\n", end_time - start_time);
 
   start_time = ktime_to_ns(ktime_get());
   zero_buffer = kzalloc(wdev->dm.size, GFP_KERNEL);
@@ -64,11 +64,11 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   kfree(zero_buffer);
   if (ret)
   {
-    pr_info("wbpf: failed to zero data memory\n");
+    dev_err(&wdev->pdev->dev, "failed to zero data memory\n");
     return ret;
   }
   end_time = ktime_to_ns(ktime_get());
-  pr_info("wbpf: cleared %u bytes of data memory in %llu ns\n", wdev->dm.size, end_time - start_time);
+  dev_info(&wdev->pdev->dev, "cleared %u bytes of data memory in %llu ns\n", wdev->dm.size, end_time - start_time);
 
   return 0;
 }
@@ -82,7 +82,7 @@ int wbpf_device_init_dma(struct wbpf_device *wdev)
   wdev->dmem_dma = dma_request_channel(dma_mask, NULL, NULL);
   if (IS_ERR(wdev->dmem_dma))
   {
-    pr_err("wbpf: failed to allocate DMA channel\n");
+    dev_err(&wdev->pdev->dev, "failed to allocate DMA channel\n");
     return PTR_ERR(wdev->dmem_dma);
   }
   mutex_init(&wdev->dmem_dma_lock);
@@ -119,7 +119,7 @@ static int device_xfer(struct wbpf_device *wdev, uint32_t offset, void *kernel_b
   ret = dma_mapping_error(chan_dev, dma_buf);
   if (ret)
   {
-    pr_err("wbpf: xmit: DMA mapping failed\n");
+    dev_err(&wdev->pdev->dev, "xmit: DMA mapping failed\n");
     goto fail_dma_mapping;
   }
 
@@ -147,7 +147,7 @@ static int device_xfer(struct wbpf_device *wdev, uint32_t offset, void *kernel_b
   ret = dma_submit_error(dmaengine_submit(txdesc));
   if (ret)
   {
-    pr_err("wbpf: xmit: DMA submit failed\n");
+    dev_err(&wdev->pdev->dev, "xmit: DMA submit failed\n");
     goto fail_submit;
   }
 

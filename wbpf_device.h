@@ -4,6 +4,7 @@
 #include <linux/clk.h>
 #include <linux/cdev.h>
 #include <linux/dmaengine.h>
+#include <linux/platform_device.h>
 
 struct wbpf_device_region
 {
@@ -17,6 +18,7 @@ struct wbpf_device
   struct wbpf_device_region mmio;
   struct wbpf_device_region dm;
   struct clk *clk;
+  struct platform_device *pdev;
 
   int num_pe;
   uint32_t hw_revision_major;
