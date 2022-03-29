@@ -277,12 +277,18 @@ static struct platform_driver wbpf_platform_driver = {
 static int fop_open(struct inode *inode, struct file *filp)
 {
   struct wbpf_device *box = container_of(inode->i_cdev, struct wbpf_device, cdev);
+
+  if (atomic_cmpxchg(&box->in_use, 0, 1) != 0)
+    return -EBUSY;
+
   filp->private_data = box;
   return 0;
 }
 
 static int fop_release(struct inode *inode, struct file *filp)
 {
+  struct wbpf_device *wdev = filp->private_data;
+  atomic_set(&wdev->in_use, 0);
   return 0;
 }
 
