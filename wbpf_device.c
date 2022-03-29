@@ -133,13 +133,13 @@ static int device_xfer(struct wbpf_device *wdev, uint32_t offset, dma_addr_t dma
         wdev->dmem_dma,
         wdev->dm.phys + offset,
         dma_buffer,
-        size, 0);
+        size, DMA_PREP_INTERRUPT);
   else
     txdesc = wdev->dmem_dma->device->device_prep_dma_memcpy(
         wdev->dmem_dma,
         dma_buffer,
         wdev->dm.phys + offset,
-        size, 0);
+        size, DMA_PREP_INTERRUPT);
 
   if (!txdesc)
   {
