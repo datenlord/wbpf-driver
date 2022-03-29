@@ -268,7 +268,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
   switch (cmd)
   {
-  case WBPF_IOCTL_LOAD_CODE:
+  case WBPF_IOC_LOAD_CODE:
     if (copy_from_user(&user_arg.load_code, (void __user *)arg, sizeof(user_arg.load_code)))
     {
       return -EFAULT;
@@ -314,7 +314,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
     kfree(buffer);
     return 0;
-  case WBPF_IOCTL_STOP:
+  case WBPF_IOC_STOP:
     if (copy_from_user(&user_arg.stop, (void __user *)arg, sizeof(user_arg.stop)))
     {
       return -EFAULT;
@@ -326,7 +326,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     io_addr = mmio_base_for_core(wdev, user_arg.stop.pe_index);
     writel(0x1, io_addr + 0x04);
     return 0;
-  case WBPF_IOCTL_START:
+  case WBPF_IOC_START:
     if (copy_from_user(&user_arg.start, (void __user *)arg, sizeof(user_arg.start)))
     {
       return -EFAULT;
@@ -339,7 +339,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     writel(user_arg.start.pc, io_addr + 0x18);
     return 0;
   default:
-    return -EINVAL;
+    return -ENOTTY;
   }
 }
 

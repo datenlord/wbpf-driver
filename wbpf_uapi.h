@@ -1,10 +1,13 @@
 #pragma once
 
 #include <linux/module.h>
+#include <asm-generic/ioctl.h>
 
-#define WBPF_IOCTL_LOAD_CODE 0x1
-#define WBPF_IOCTL_STOP 0x2
-#define WBPF_IOCTL_START 0x3
+#define WBPF_IOC_MAGIC 'w'
+
+#define WBPF_IOC_LOAD_CODE _IOW(WBPF_IOC_MAGIC, 1, struct wbpf_uapi_load_code_args)
+#define WBPF_IOC_STOP _IOW(WBPF_IOC_MAGIC, 2, struct wbpf_uapi_stop_args)
+#define WBPF_IOC_START _IOW(WBPF_IOC_MAGIC, 3, struct wbpf_uapi_start_args)
 
 #define MAX_LOAD_CODE_SIZE 16384
 
