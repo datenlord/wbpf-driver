@@ -3,6 +3,9 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 
+// in 8-byte words
+#define MAX_INSN_BUFFER_SIZE 16384
+
 struct dmacopy_completion_context
 {
   struct wait_queue_head *wq;
@@ -88,9 +91,18 @@ int wbpf_device_probe(struct wbpf_device *wdev)
     return -ENODEV;
   }
 
-  dev_info(&wdev->pdev->dev, "hardware revision: %u.%u, number of processing elements: %d\n",
+  wdev->insn_buffer_size = readl(mmio_base_for_core(wdev, 0) + 0x0c);
+  if (wdev->insn_buffer_size == 0 ||
+      wdev->insn_buffer_size > MAX_INSN_BUFFER_SIZE)
+  {
+    dev_err(&wdev->pdev->dev, "unsupported instruction buffer size: %u\n", wdev->insn_buffer_size);
+    return -ENODEV;
+  }
+
+  dev_info(&wdev->pdev->dev,
+           "hardware revision: %u.%u, number of processing elements: %d, instruction buffer size: %u words\n",
            wdev->hw_revision_major, wdev->hw_revision_minor,
-           wdev->num_pe);
+           wdev->num_pe, wdev->insn_buffer_size);
 
   // At this point we haven't enabled IRQ yet.
   start_time = ktime_to_ns(ktime_get());

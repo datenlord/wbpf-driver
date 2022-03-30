@@ -23,6 +23,7 @@ struct wbpf_device
   struct platform_device *pdev;
 
   uint32_t num_pe;
+  uint32_t insn_buffer_size;
   uint32_t hw_revision_major;
   uint32_t hw_revision_minor;
   int irq;

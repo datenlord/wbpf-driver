@@ -13,7 +13,6 @@
 #define WBPF_IOC_GET_HW_REVISION _IOR(WBPF_IOC_MAGIC, 6, struct wbpf_uapi_hw_revision)
 #define WBPF_IOC_GET_NUM_PE _IOR(WBPF_IOC_MAGIC, 7, struct wbpf_uapi_num_pe)
 
-#define MAX_LOAD_CODE_SIZE 16384
 #define MAX_NUM_PE 16
 
 struct wbpf_uapi_load_code_args

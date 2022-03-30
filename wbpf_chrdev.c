@@ -106,7 +106,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     }
     if (
         user_arg.load_code.offset + user_arg.load_code.code_len < user_arg.load_code.offset ||
-        user_arg.load_code.offset + user_arg.load_code.code_len > MAX_LOAD_CODE_SIZE ||
+        ((user_arg.load_code.offset + user_arg.load_code.code_len) >> 3) > wdev->insn_buffer_size ||
         user_arg.load_code.code_len == 0 ||
         (user_arg.load_code.code_len & 0b111) != 0 ||
         (user_arg.load_code.offset & 0b111) != 0)
@@ -127,7 +127,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     i = user_arg.load_code.code_len >> 3;
     io_addr = mmio_base_for_core(wdev, user_arg.load_code.pe_index);
 
-    writel(user_arg.load_code.offset, io_addr + 0x0); // refill counter
+    writel(user_arg.load_code.offset >> 3, io_addr + 0x0); // refill counter
     while (i--)
     {
       writel(*(code_pointer++), io_addr + 0x08);
