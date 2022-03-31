@@ -24,7 +24,7 @@ DEFINE_MUTEX(minor_alloc_lock);
 static int dev_major;
 static struct class *dev_cls;
 
-static const unsigned long HW_FREQ = 100000000;
+static const unsigned long HW_FREQ = 95000000;
 
 // TODO: DT
 static const unsigned long LVL_SHFTR_EN = 0xF8000900;

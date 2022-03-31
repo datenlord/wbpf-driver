@@ -12,6 +12,7 @@
 #define WBPF_IOC_READ_DM _IOW(WBPF_IOC_MAGIC, 5, struct wbpf_uapi_read_dm_args)
 #define WBPF_IOC_GET_HW_REVISION _IOR(WBPF_IOC_MAGIC, 6, struct wbpf_uapi_hw_revision)
 #define WBPF_IOC_GET_NUM_PE _IOR(WBPF_IOC_MAGIC, 7, struct wbpf_uapi_num_pe)
+#define WBPF_IOC_GET_PERFORMANCE_COUNTERS _IOW(WBPF_IOC_MAGIC, 8, struct wbpf_uapi_read_performance_counters_args)
 
 #define MAX_NUM_PE 16
 
@@ -66,6 +67,19 @@ struct wbpf_uapi_pe_exception_state
   uint64_t data;
 };
 
+struct wbpf_uapi_read_performance_counters_args
+{
+  uint32_t pe_index;
+  unsigned long out; // wbpf_uapi_performance_counters *
+  size_t size;
+};
+
+struct wbpf_uapi_performance_counters
+{
+  uint64_t cycles;
+  uint64_t commits;
+};
+
 union wbpf_uapi_arg
 {
   struct wbpf_uapi_load_code_args load_code;
@@ -73,4 +87,5 @@ union wbpf_uapi_arg
   struct wbpf_uapi_start_args start;
   struct wbpf_uapi_write_dm_args write_dm;
   struct wbpf_uapi_read_dm_args read_dm;
+  struct wbpf_uapi_read_performance_counters_args read_performance_counters;
 };

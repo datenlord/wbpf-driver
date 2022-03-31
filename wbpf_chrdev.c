@@ -229,6 +229,34 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
       return -EFAULT;
     return 0;
   }
+  case WBPF_IOC_GET_PERFORMANCE_COUNTERS:
+  {
+    struct wbpf_uapi_performance_counters performance_counters = {0};
+
+    if (copy_from_user(&user_arg.read_performance_counters, (void __user *)arg, sizeof(user_arg.read_performance_counters)))
+    {
+      return -EFAULT;
+    }
+    if (user_arg.load_code.pe_index >= wdev->num_pe)
+    {
+      return -EINVAL;
+    }
+
+    performance_counters.cycles =
+        (((uint64_t)readl(mmio_base_for_core(wdev, user_arg.read_performance_counters.pe_index) + 0x44)) << 32) |
+        (uint64_t)readl(mmio_base_for_core(wdev, user_arg.read_performance_counters.pe_index) + 0x40);
+
+    performance_counters.commits =
+        (((uint64_t)readl(mmio_base_for_core(wdev, user_arg.read_performance_counters.pe_index) + 0x4c)) << 32) |
+        (uint64_t)readl(mmio_base_for_core(wdev, user_arg.read_performance_counters.pe_index) + 0x48);
+
+    if (copy_to_user(
+            (void *)user_arg.read_performance_counters.out,
+            &performance_counters,
+            min(user_arg.read_performance_counters.size, sizeof(performance_counters))))
+      return -EFAULT;
+    return 0;
+  }
   default:
     return -ENOTTY;
   }
@@ -254,11 +282,23 @@ static ssize_t fop_read(struct file *filp, char __user *out, size_t len, loff_t 
   struct chrdev_context *cctx = filp->private_data;
   struct wbpf_device *wdev = cctx->wdev;
   struct wbpf_uapi_pe_exception_state exc_state[MAX_NUM_PE];
-  size_t copy_len = sizeof(exc_state) < len ? sizeof(exc_state) : len;
+  size_t copy_len = min(sizeof(exc_state), len);
 
-  ret = wait_event_interruptible(wdev->intr_wq, has_new_exc_generation(cctx, exc_state));
-  if (ret)
-    return ret;
+  memset(exc_state, 0, sizeof(exc_state));
+
+  if (filp->f_flags & O_NONBLOCK)
+  {
+    if (!has_new_exc_generation(cctx, exc_state))
+    {
+      return -EAGAIN;
+    }
+  }
+  else
+  {
+    ret = wait_event_interruptible(wdev->intr_wq, has_new_exc_generation(cctx, exc_state));
+    if (ret)
+      return ret;
+  }
 
   if (copy_to_user(out, exc_state, copy_len))
     return -EFAULT;
