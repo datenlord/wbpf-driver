@@ -14,7 +14,7 @@ struct dmacopy_completion_context
 
 static void dmacopy_completion(void *arg);
 
-static void lock_and_update_pe_exc(struct wbpf_device *wdev)
+static int lock_and_update_pe_exc(struct wbpf_device *wdev)
 {
   long i;
   unsigned long irq_flags;
@@ -38,19 +38,12 @@ static void lock_and_update_pe_exc(struct wbpf_device *wdev)
     // Exceptions do not disappear automatically but new exceptions may appear when we are reading
     // the registers.
     new_code = readl(code_reg);
-    if (new_code != wdev->pe_exc[i].code)
+    if (new_code & (1U << 31))
     {
       wdev->pe_exc[i].code = new_code;
-
-      // If the code changed from any value to a new non-zero value, notify userspace.
-      if (new_code)
-        new_generation = 1;
-    }
-
-    if (new_code)
-    {
       wdev->pe_exc[i].pc = readl(pc_reg);
       wdev->pe_exc[i].data = (((uint64_t)readl(data_upper_reg)) << 32) | (uint64_t)readl(data_lower_reg);
+      new_generation = 1;
       writel(0x1, code_reg); // ack
     }
   }
@@ -61,6 +54,7 @@ static void lock_and_update_pe_exc(struct wbpf_device *wdev)
   }
 
   spin_unlock_irqrestore(&wdev->pe_exc_lock, irq_flags);
+  return new_generation;
 }
 
 int wbpf_device_probe(struct wbpf_device *wdev)
@@ -70,6 +64,7 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   uint32_t pe_info;
   uint32_t hw_revision;
   uint64_t start_time, end_time;
+  uint64_t busy_loop_start_time;
 
   // Read HW rev
   hw_revision = readl(mmio_base_for_core(wdev, 0) + 0x34);
@@ -112,8 +107,18 @@ int wbpf_device_probe(struct wbpf_device *wdev)
   }
   for (i = 0; i < wdev->num_pe; i++)
   {
-    while (readl(mmio_base_for_core(wdev, i) + 0x20) != WBPF_EXC_STOP)
+    busy_loop_start_time = ktime_to_ns(ktime_get());
+    while (
+        readl(mmio_base_for_core(wdev, i) + 0x20) !=
+        ((uint32_t)WBPF_EXC_STOP | (1U << 31)))
+    {
+      if (ktime_to_ns(ktime_get()) - busy_loop_start_time > 1000000)
+      {
+        dev_err(&wdev->pdev->dev, "timeout waiting for processing element %lu to stop\n", i);
+        return -ENODEV;
+      }
       cpu_relax();
+    }
     // Do not ack yet - `lock_and_update_pe_exc` will do it
   }
   end_time = ktime_to_ns(ktime_get());
@@ -279,6 +284,9 @@ irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
   struct wbpf_device *wdev = platform_get_drvdata(pdev);
 
   printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
-  lock_and_update_pe_exc(wdev);
+  if (lock_and_update_pe_exc(wdev))
+  {
+    wake_up_interruptible(&wdev->intr_wq);
+  }
   return IRQ_HANDLED;
 }

@@ -21,6 +21,7 @@ static int has_new_exc_generation(struct chrdev_context *cctx, struct wbpf_uapi_
   unsigned long flags;
   struct wbpf_device *wdev = cctx->wdev;
   int ret = 0;
+  int i;
 
   spin_lock_irqsave(&wdev->pe_exc_lock, flags);
   if (wdev->pe_exc_generation != cctx->pe_exc_generation)
@@ -29,6 +30,12 @@ static int has_new_exc_generation(struct chrdev_context *cctx, struct wbpf_uapi_
     {
       memcpy(out, wdev->pe_exc, sizeof(wdev->pe_exc));
       cctx->pe_exc_generation = wdev->pe_exc_generation;
+
+      // Clear intr bit
+      for (i = 0; i < wdev->num_pe; i++)
+      {
+        wdev->pe_exc[i].code &= 0x7FFFFFFFU;
+      }
     }
     ret = 1;
   }
@@ -92,6 +99,7 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
   uint8_t *buffer;
   uint32_t *code_pointer;
   void __iomem *io_addr;
+  uint64_t start_time, end_time;
 
   switch (cmd)
   {
@@ -127,17 +135,20 @@ static long fop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     i = user_arg.load_code.code_len >> 3;
     io_addr = mmio_base_for_core(wdev, user_arg.load_code.pe_index);
 
+    start_time = ktime_to_ns(ktime_get());
     writel(user_arg.load_code.offset >> 3, io_addr + 0x0); // refill counter
     while (i--)
     {
       writel(*(code_pointer++), io_addr + 0x08);
       writel(*(code_pointer++), io_addr + 0x10);
     }
+    end_time = ktime_to_ns(ktime_get());
 
-    dev_info(&wdev->pdev->dev, "code of %u bytes loaded to processing element %u offset %u\n",
+    dev_info(&wdev->pdev->dev, "code of %u bytes loaded to processing element %u offset %u in %llu ns\n",
              user_arg.load_code.code_len,
              user_arg.load_code.pe_index,
-             user_arg.load_code.offset);
+             user_arg.load_code.offset,
+             end_time - start_time);
 
     kfree(buffer);
     return 0;
