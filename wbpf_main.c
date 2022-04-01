@@ -169,7 +169,7 @@ int wbpf_pd_probe(struct platform_device *pdev)
     goto fail_minor_alloc;
   }
 
-  ret = devm_request_irq(&pdev->dev, irq, handle_wbpf_intr, 0, dev_name(&pdev->dev), pdev);
+  ret = devm_request_threaded_irq(&pdev->dev, irq, prepare_wbpf_intr, handle_wbpf_intr, 0, dev_name(&pdev->dev), pdev);
   if (ret)
     goto fail_request_irq;
 

@@ -54,7 +54,10 @@ int wbpf_device_recv_data_memory_dma(
     struct wbpf_device *wdev,
     uint32_t offset,
     dma_addr_t dst, uint32_t size);
+irqreturn_t prepare_wbpf_intr(int irq, void *pdev_v);
 irqreturn_t handle_wbpf_intr(int irq, void *pdev_v);
+uint64_t wbpf_device_read_register(struct wbpf_device *wdev, uint32_t pe_index, uint32_t regindex);
+void wbpf_device_write_register(struct wbpf_device *wdev, uint32_t pe_index, uint32_t regindex, uint64_t value);
 
 static inline void __iomem *mmio_base_for_core(struct wbpf_device *wdev, size_t core_index)
 {

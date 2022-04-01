@@ -14,6 +14,147 @@ struct dmacopy_completion_context
 
 static void dmacopy_completion(void *arg);
 
+static int try_polyfill(struct wbpf_device *wdev, int pe_index, uint32_t code, uint32_t pc, uint64_t data)
+{
+  if (code == WBPF_EXC_BAD_INSTRUCTION)
+  {
+    uint64_t insn = data;
+    uint8_t opc = insn & 0xff;
+    uint8_t dst_reg_index = (insn >> 8) & 0xf;
+    uint8_t src_reg_index = (insn >> 12) & 0xf;
+    uint64_t imm = (int64_t)(int32_t)(insn >> 32);
+    switch (opc)
+    {
+    case 0x27:
+    {
+      // mul dst, imm
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst * imm);
+      goto resume;
+    }
+    case 0x2f:
+    {
+      // mul dst, src
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      uint64_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst * src);
+      goto resume;
+    }
+    case 0x24:
+    {
+      // mul32 dst, imm
+      uint32_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst * imm);
+      goto resume;
+    }
+    case 0x2c:
+    {
+      // mul32 dst, src
+      uint32_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      uint32_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst * src);
+      goto resume;
+    }
+    case 0x37:
+    {
+      // div dst, imm
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      if (imm == 0)
+        return 0;
+
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, div64_u64(dst, imm));
+      goto resume;
+    }
+    case 0x3f:
+    {
+      // div dst, src
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      uint64_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      if (src == 0)
+        return 0;
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, div64_u64(dst, src));
+      goto resume;
+    }
+    case 0x34:
+    {
+      // div32 dst, imm
+      uint32_t imm32 = imm;
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index) & 0xffffffff;
+      if (imm32 == 0)
+        return 0;
+
+      do_div(dst, imm32);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst);
+      goto resume;
+    }
+    case 0x3c:
+    {
+      // div32 dst, src
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index) & 0xffffffff;
+      uint32_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      if (src == 0)
+        return 0;
+      do_div(dst, src);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, dst);
+      goto resume;
+    }
+    case 0x97:
+    {
+      // mod dst, imm
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      uint64_t rem;
+      if (imm == 0)
+        return 0;
+
+      div64_u64_rem(dst, imm, &rem);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, rem);
+      goto resume;
+    }
+    case 0x9f:
+    {
+      // mod dst, src
+      uint64_t rem;
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index);
+      uint64_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      if (src == 0)
+        return 0;
+
+      div64_u64_rem(dst, src, &rem);
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, rem);
+      goto resume;
+    }
+    case 0x94:
+    {
+      // mod32 dst, imm
+      uint32_t imm32 = imm;
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index) & 0xffffffff;
+      if (imm32 == 0)
+        return 0;
+
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, do_div(dst, imm32));
+      goto resume;
+    }
+    case 0x9c:
+    {
+      // mod32 dst, src
+      uint64_t dst = wbpf_device_read_register(wdev, pe_index, dst_reg_index) & 0xffffffff;
+      uint32_t src = wbpf_device_read_register(wdev, pe_index, src_reg_index);
+      if (src == 0)
+        return 0;
+      wbpf_device_write_register(wdev, pe_index, dst_reg_index, do_div(dst, src));
+      goto resume;
+    }
+    default:
+      break;
+    }
+  }
+  return 0;
+
+resume:
+  writel(pc + 8, mmio_base_for_core(wdev, pe_index) + 0x18);
+  return 1;
+}
+
 static int lock_and_update_pe_exc(struct wbpf_device *wdev)
 {
   long i;
@@ -32,6 +173,8 @@ static int lock_and_update_pe_exc(struct wbpf_device *wdev)
     void *data_lower_reg = base + 0x28;
     void *data_upper_reg = base + 0x2c;
     uint32_t new_code;
+    uint32_t pc;
+    uint64_t data;
 
     // XXX: Ordering: `code` must be read first.
     // Exceptions do not disappear automatically but new exceptions may appear when we are reading
@@ -39,11 +182,18 @@ static int lock_and_update_pe_exc(struct wbpf_device *wdev)
     new_code = readl(code_reg);
     if (new_code & (1U << 31))
     {
-      wdev->pe_exc[i].code = new_code;
-      wdev->pe_exc[i].pc = readl(pc_reg);
-      wdev->pe_exc[i].data = (((uint64_t)readl(data_upper_reg)) << 32) | (uint64_t)readl(data_lower_reg);
-      new_generation = 1;
       writel(0x1, code_reg); // ack
+      pc = readl(pc_reg);
+      data = (((uint64_t)readl(data_upper_reg)) << 32) | (uint64_t)readl(data_lower_reg);
+
+      // Attempt to polyfill the exception.
+      if (!try_polyfill(wdev, i, new_code & 0x7FFFFFFF, pc, data))
+      {
+        wdev->pe_exc[i].code = new_code;
+        wdev->pe_exc[i].pc = pc;
+        wdev->pe_exc[i].data = data;
+        new_generation = 1;
+      }
     }
   }
 
@@ -111,12 +261,12 @@ int wbpf_device_probe(struct wbpf_device *wdev)
         readl(mmio_base_for_core(wdev, i) + 0x20) !=
         ((uint32_t)WBPF_EXC_STOP | (1U << 31)))
     {
-      if (ktime_to_ns(ktime_get()) - busy_loop_start_time > 1000000)
+      if (ktime_to_ns(ktime_get()) - busy_loop_start_time > 10000000)
       {
         dev_err(&wdev->pdev->dev, "timeout waiting for processing element %lu to stop\n", i);
         return -ENODEV;
       }
-      cpu_relax();
+      yield();
     }
     // Do not ack yet - `lock_and_update_pe_exc` will do it
   }
@@ -270,11 +420,49 @@ int wbpf_device_recv_data_memory_dma(
   return device_xfer(wdev, offset, dst, size, 0);
 }
 
+uint64_t wbpf_device_read_register(struct wbpf_device *wdev, uint32_t pe_index, uint32_t regindex)
+{
+  void *lower;
+
+  BUG_ON(pe_index >= wdev->num_pe || regindex >= 16);
+  lower = mmio_base_for_core(wdev, pe_index) + 0x80 + regindex * 8;
+  return ((uint64_t)readl(lower + 4) << 32) | (uint64_t)readl(lower);
+}
+
+void wbpf_device_write_register(struct wbpf_device *wdev, uint32_t pe_index, uint32_t regindex, uint64_t value)
+{
+  BUG_ON(pe_index >= wdev->num_pe || regindex >= 16);
+  writel((uint32_t)value, mmio_base_for_core(wdev, pe_index) + 0x08);
+  writel((uint32_t)(value >> 32), mmio_base_for_core(wdev, pe_index) + 0x80 + regindex * 8 + 4);
+}
+
 static void dmacopy_completion(void *arg)
 {
   struct dmacopy_completion_context *ctx = arg;
   ctx->done = 1;
   wake_up_all(ctx->wq);
+}
+
+irqreturn_t prepare_wbpf_intr(int irq, void *pdev_v)
+{
+  struct platform_device *pdev = pdev_v;
+  struct wbpf_device *wdev = platform_get_drvdata(pdev);
+  int i;
+
+  // Quick check
+  for (i = 0; i < wdev->num_pe; i++)
+  {
+    void *base = mmio_base_for_core(wdev, i);
+    void *code_reg = base + 0x20;
+    uint32_t new_code = readl(code_reg);
+    if (new_code & (1U << 31))
+    {
+      disable_irq_nosync(irq);
+      return IRQ_WAKE_THREAD;
+    }
+  }
+
+  return IRQ_NONE;
 }
 
 irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
@@ -287,5 +475,7 @@ irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
   {
     wake_up_interruptible(&wdev->intr_wq);
   }
+
+  enable_irq(irq);
   return IRQ_HANDLED;
 }
