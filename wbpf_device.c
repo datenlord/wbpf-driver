@@ -23,7 +23,6 @@ static int lock_and_update_pe_exc(struct wbpf_device *wdev)
   BUG_ON(wdev->num_pe > MAX_NUM_PE);
 
   spin_lock_irqsave(&wdev->pe_exc_lock, irq_flags);
-  memset(&wdev->pe_exc, 0, sizeof(wdev->pe_exc));
 
   for (i = 0; i < wdev->num_pe; i++)
   {
@@ -283,7 +282,7 @@ irqreturn_t handle_wbpf_intr(int irq, void *pdev_v)
   struct platform_device *pdev = pdev_v;
   struct wbpf_device *wdev = platform_get_drvdata(pdev);
 
-  printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
+  // printk(KERN_INFO "wbpf: interrupt received: %s\n", pdev->name);
   if (lock_and_update_pe_exc(wdev))
   {
     wake_up_interruptible(&wdev->intr_wq);
